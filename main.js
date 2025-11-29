@@ -573,48 +573,50 @@ export class UnifiInstance extends InstanceBase {
 			const siteUuid = await this.getSiteUuid()
 			const deviceUuid = await this.getDeviceUuid(switch_mac)
 
-			// First, get the device details from Integration API to get device _id
+			// First, get the device details from Integration API to get device MAC
 			const device = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices/${deviceUuid}`)
 
 			// Resolve legacy _id by MAC with caching
 			const targetMac = String(device.macAddress || device.mac || switch_mac).toLowerCase()
 			let deviceId = this.legacyMacToId.get(targetMac) || ''
 			if (!deviceId) {
-				// Fetch device list and populate cache
 				const legacyDevices = await this.legacyApiRequest('GET', `/s/<SITE>/stat/device`)
-
 				if (!legacyDevices || !Array.isArray(legacyDevices) || legacyDevices.length === 0) {
 					throw new Error('Legacy device list not found')
 				}
-
 				for (const d of legacyDevices) {
 					if (d && d.mac && d._id) {
 						this.legacyMacToId.set(String(d.mac).toLowerCase(), String(d._id))
 					}
 				}
-
 				deviceId = this.legacyMacToId.get(targetMac) || ''
 				if (!deviceId) {
 					throw new Error(`Device with MAC ${targetMac} not found in legacy API`)
 				}
 			}
-			// Try to fetch current device config to preserve existing port_overrides.
-			// Some controller versions do not support GET on /rest/device/{id}; default to empty array on 404.
+
+			// Preserve existing port_overrides: try GET /rest/device/{id}, else fallback to /stat/device
 			let portOverrides = []
 			try {
 				const fullDeviceConfig = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${deviceId}`, null, {
 					suppressNotFound: true,
 				})
 				const currentDevice = Array.isArray(fullDeviceConfig) ? fullDeviceConfig[0] : fullDeviceConfig
-				portOverrides = currentDevice && currentDevice.port_overrides ? currentDevice.port_overrides : []
+				portOverrides = currentDevice && Array.isArray(currentDevice.port_overrides) ? currentDevice.port_overrides : []
 			} catch (e) {
-				this.debug(
-					'Legacy GET for device config failed for id=' +
-						deviceId +
-						'; proceeding with empty port_overrides. Error=' +
-						/** @type {any} */ (e)?.message
-				)
-				portOverrides = []
+				// ignore, fallback below
+			}
+			if (!Array.isArray(portOverrides)) portOverrides = []
+			if (portOverrides.length === 0) {
+				try {
+					const legacyDevicesForOverrides = await this.legacyApiRequest('GET', `/s/<SITE>/stat/device`)
+					const statDevice = Array.isArray(legacyDevicesForOverrides)
+						? legacyDevicesForOverrides.find((d) => String(d?.mac || '').toLowerCase() === targetMac)
+						: null
+					portOverrides = statDevice && Array.isArray(statDevice.port_overrides) ? statDevice.port_overrides : []
+				} catch (e2) {
+					portOverrides = []
+				}
 			}
 
 			// Find or create port override
@@ -622,16 +624,14 @@ export class UnifiInstance extends InstanceBase {
 			if (selectedPort) {
 				selectedPort.poe_mode = poe_mode
 			} else {
-				portOverrides.push({
-					port_idx: Number(port_idx),
-					poe_mode: poe_mode,
-				})
+				portOverrides.push({ port_idx: Number(port_idx), poe_mode })
 			}
 
 			// Update device via legacy API
-			await this.legacyApiRequest('PUT', `/s/<SITE>/rest/device/${deviceId}`, {
-				port_overrides: portOverrides,
-			})
+			await this.legacyApiRequest('PUT', `/s/<SITE>/rest/device/${deviceId}`, { port_overrides: portOverrides })
+
+			// Refresh cached port states to reflect changes sooner
+			await this.refreshPortStates()
 
 			this.log('info', `Changed POE mode on port ${port_idx} of device ${switch_mac} to ${poe_mode}`)
 		} catch (e) {
