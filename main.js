@@ -495,8 +495,8 @@ export class UnifiInstance extends InstanceBase {
 			// First, get the device details from Integration API to get device _id
 			const device = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices/${deviceUuid}`)
 
-			// Get full device list from legacy API and match by MAC to obtain _id
-			const legacyDevices = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device`)
+			// Get full device list from legacy API (stat endpoint) and match by MAC to obtain _id
+			const legacyDevices = await this.legacyApiRequest('GET', `/s/<SITE>/stat/device`)
 
 			if (!legacyDevices || !Array.isArray(legacyDevices) || legacyDevices.length === 0) {
 				throw new Error('Legacy device list not found')
