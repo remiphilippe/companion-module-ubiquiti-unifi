@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-This is a **Companion module** that controls Ubiquiti UniFi network switches via the UniFi controller API. It's built on the `@companion-module/base` framework and uses ES modules (`"type": "module"` in package.json).
+This is a **Companion module** that controls Ubiquiti UniFi network switches via the UniFi controller API. It's built on the `@companion-module/base` framework and uses ES modules (`"type": "module"` in package.json), the host runs node v22.
 
 **Key Components:**
 - [main.js](../main.js) - `UnifiInstance` class extends `InstanceBase`, manages controller connection, authentication, and API operations

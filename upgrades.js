@@ -42,12 +42,8 @@ export const UpgradeScripts = [
 				delete result.updatedConfig.password
 				delete result.updatedConfig.token2FA
 				// apiKey will need to be configured by user
-				context.logger.warn(
-					'UniFi module upgraded to use API Key authentication. Please configure an API Key in Settings → Admins & Users → API Access.'
-				)
 			}
 		}
-
 		return result
 	},
 ]

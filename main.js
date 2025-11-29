@@ -1,11 +1,33 @@
 // @ts-check
+/* global fetch */
 
 import { InstanceBase, InstanceStatus, runEntrypoint } from '@companion-module/base'
 import pQueue from 'p-queue'
+import https from 'https'
 import { getActionDefinitions } from './actions.js'
 import { getConfigFields } from './config.js'
 import { UpgradeScripts } from './upgrades.js'
 
+// Create a global HTTPS agent for SSL bypass
+/** @type {https.Agent | null} */
+let insecureAgent = null
+
+/**
+ * Get or create an HTTPS agent that bypasses SSL verification
+ * @returns {https.Agent}
+ */
+function getInsecureAgent() {
+	if (!insecureAgent) {
+		insecureAgent = new https.Agent({
+			rejectUnauthorized: false,
+		})
+	}
+	return insecureAgent
+}
+
+/**
+ * @extends {InstanceBase<any, any>}
+ */
 export class UnifiInstance extends InstanceBase {
 	queue = new pQueue({
 		concurrency: 1,
@@ -40,6 +62,9 @@ export class UnifiInstance extends InstanceBase {
 		return getConfigFields()
 	}
 
+	/**
+	 * @param {any} config
+	 */
 	async init(config) {
 		this.config = config
 
@@ -53,11 +78,10 @@ export class UnifiInstance extends InstanceBase {
 			if (this.config.apiKey) {
 				try {
 					await this.apiRequest('GET', '/v1/info')
-					if (this.getStatus() !== InstanceStatus.Ok) {
-						this.updateStatus(InstanceStatus.Ok)
-					}
+					this.updateStatus(InstanceStatus.Ok)
 				} catch (e) {
-					this.log('error', `Connection check failed: ${e?.message ?? e}`)
+					const err = /** @type {Error} */ (e)
+					this.log('error', `Connection check failed: ${err?.message ?? err}`)
 					this.updateStatus(InstanceStatus.ConnectionFailure)
 				}
 			}
@@ -76,25 +100,22 @@ export class UnifiInstance extends InstanceBase {
 			throw new Error('API Key not configured')
 		}
 
-		const siteUuid = await this.getSiteUuid()
 		// Legacy API uses site name, not UUID
 		const siteName = this.config.site || 'default'
 		const legacyPath = path.replace('<SITE>', siteName)
 		const url = `https://${this.config.host}:${this.config.port}/api${legacyPath}`
 
+		/** @type {any} */
 		const options = {
 			method,
 			headers: {
-				'Authorization': `Bearer ${this.config.apiKey}`,
+				Authorization: `Bearer ${this.config.apiKey}`,
 				'Content-Type': 'application/json',
 			},
 		}
 
 		if (!this.config.sslverify) {
-			// @ts-ignore - Node 18+ supports this
-			options.agent = new (await import('https')).Agent({
-				rejectUnauthorized: false,
-			})
+			options.agent = getInsecureAgent()
 		}
 
 		if (body) {
@@ -137,19 +158,17 @@ export class UnifiInstance extends InstanceBase {
 
 		const url = `https://${this.config.host}:${this.config.port}/integration${path}`
 
+		/** @type {any} */
 		const options = {
 			method,
 			headers: {
-				'Authorization': `Bearer ${this.config.apiKey}`,
+				Authorization: `Bearer ${this.config.apiKey}`,
 				'Content-Type': 'application/json',
 			},
 		}
 
 		if (!this.config.sslverify) {
-			// @ts-ignore - Node 18+ supports this
-			options.agent = new (await import('https')).Agent({
-				rejectUnauthorized: false,
-			})
+			options.agent = getInsecureAgent()
 		}
 
 		if (body) {
@@ -182,12 +201,12 @@ export class UnifiInstance extends InstanceBase {
 	 */
 	async getSiteUuid() {
 		if (this.siteUuid) {
-			return this.siteUuid
+			return /** @type {string} */ (this.siteUuid)
 		}
 
 		if (this.config.siteUuid) {
 			this.siteUuid = this.config.siteUuid
-			return this.siteUuid
+			return /** @type {string} */ (this.siteUuid)
 		}
 
 		// Discover site UUID from site name
@@ -199,12 +218,13 @@ export class UnifiInstance extends InstanceBase {
 			if (response.data && response.data.length > 0) {
 				this.siteUuid = response.data[0].id
 				this.log('info', `Discovered site UUID: ${this.siteUuid} for site: ${siteName}`)
-				return this.siteUuid
+				return /** @type {string} */ (this.siteUuid)
 			}
 
 			throw new Error(`Site '${siteName}' not found`)
 		} catch (e) {
-			this.log('error', `Failed to discover site UUID: ${e?.message ?? e}`)
+			const err = /** @type {Error} */ (e)
+			this.log('error', `Failed to discover site UUID: ${err?.message ?? err}`)
 			throw e
 		}
 	}
@@ -216,14 +236,14 @@ export class UnifiInstance extends InstanceBase {
 	 */
 	async getDeviceUuid(macAddress) {
 		if (this.deviceMacToUuid.has(macAddress)) {
-			return this.deviceMacToUuid.get(macAddress)
+			return /** @type {string} */ (this.deviceMacToUuid.get(macAddress))
 		}
 
 		// Refresh device list
 		await this.refreshDeviceList()
 
 		if (this.deviceMacToUuid.has(macAddress)) {
-			return this.deviceMacToUuid.get(macAddress)
+			return /** @type {string} */ (this.deviceMacToUuid.get(macAddress))
 		}
 
 		throw new Error(`Device with MAC address ${macAddress} not found`)
@@ -246,7 +266,8 @@ export class UnifiInstance extends InstanceBase {
 				}
 			}
 		} catch (e) {
-			this.log('warn', `Failed to refresh device list: ${e?.message ?? e}`)
+			const err = /** @type {Error} */ (e)
+			this.log('warn', `Failed to refresh device list: ${err?.message ?? err}`)
 		}
 	}
 
@@ -257,8 +278,8 @@ export class UnifiInstance extends InstanceBase {
 
 			if (response.data) {
 				this.switchMacAddressOptions = response.data
-					.filter((device) => device.features && device.features.includes('switching'))
-					.map((device) => ({
+					.filter((/** @type {any} */ device) => device.features && device.features.includes('switching'))
+					.map((/** @type {any} */ device) => ({
 						id: device.macAddress,
 						label: `${device.name} (${device.macAddress})`,
 					}))
@@ -271,7 +292,8 @@ export class UnifiInstance extends InstanceBase {
 				}
 			}
 		} catch (e) {
-			this.log('warn', `Failed to load device list: ${e?.message ?? e}`)
+			const err = /** @type {Error} */ (e)
+			this.log('warn', `Failed to load device list: ${err?.message ?? err}`)
 		}
 
 		// Load port profiles from legacy API
@@ -284,13 +306,17 @@ export class UnifiInstance extends InstanceBase {
 				}))
 			}
 		} catch (e) {
-			this.log('warn', `Failed to load port profiles: ${e?.message ?? e}`)
+			const err = /** @type {Error} */ (e)
+			this.log('warn', `Failed to load port profiles: ${err?.message ?? err}`)
 			this.portProfileOptions = []
 		}
 
 		this.setActionDefinitions(getActionDefinitions(this))
 	}
 
+	/**
+	 * @param {any} config
+	 */
 	async configUpdated(config) {
 		this.config = config
 
@@ -313,14 +339,15 @@ export class UnifiInstance extends InstanceBase {
 			await this.#refreshActionInfo()
 			this.updateStatus(InstanceStatus.Ok)
 		} catch (e) {
-			this.log('error', `Connection failed: ${e?.message ?? e}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, e?.message)
+			const err = /** @type {Error} */ (e)
+			this.log('error', `Connection failed: ${err?.message ?? err}`)
+			this.updateStatus(InstanceStatus.ConnectionFailure, err?.message)
 		}
 	}
 
 	async destroy() {
 		if (this.connectionCheckTimer) {
-			clearInterval(this.connectionCheckTimer)
+			clearInterval(/** @type {any} */ (this.connectionCheckTimer))
 			this.connectionCheckTimer = null
 		}
 
@@ -365,7 +392,7 @@ export class UnifiInstance extends InstanceBase {
 
 			// Get full device config from legacy API
 			const deviceDetails = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${device.macAddress}`)
-			
+
 			if (!deviceDetails || deviceDetails.length === 0) {
 				throw new Error('Device not found')
 			}
@@ -375,7 +402,7 @@ export class UnifiInstance extends InstanceBase {
 			const portOverrides = fullDevice.port_overrides || []
 
 			// Find or create port override
-			const selectedPort = portOverrides.find((port) => port.port_idx == port_idx)
+			const selectedPort = portOverrides.find((/** @type {any} */ port) => port.port_idx == port_idx)
 			if (selectedPort) {
 				selectedPort.poe_mode = poe_mode
 			} else {
@@ -406,7 +433,7 @@ export class UnifiInstance extends InstanceBase {
 			// Get port profiles from legacy API
 			const portProfiles = await this.legacyApiRequest('GET', '/s/<SITE>/rest/portconf')
 
-			const profileConfig = portProfiles.find((profile) => profile.name == profile_name)
+			const profileConfig = portProfiles.find((/** @type {any} */ profile) => profile.name == profile_name)
 			if (!profileConfig) {
 				throw new Error('Port profile not found')
 			}
