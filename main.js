@@ -148,9 +148,15 @@ export class UnifiInstance extends InstanceBase {
 				`LEGACY FETCH FAILED ${method} ${url} ` +
 				`sslverify=${this.config.sslverify !== false} ` +
 				`headers=${JSON.stringify(safeHeaders)} ` +
-				`error=${err?.message}`
+				`error=${err?.message} ` +
+				`name=${err?.name ?? ''} ` +
+				`type=${/** @type {any} */ (err)?.type ?? ''} ` +
+				`code=${/** @type {any} */ (err)?.code ?? /** @type {any} */ (err)?.cause?.code ?? ''}`
 			this.log('error', msg)
-			this.debug(String(err && err.stack ? err.stack : err))
+			// Always include stack at error level for fetch failures
+			if (err && err.stack) {
+				this.log('error', String(err.stack))
+			}
 			throw err
 		}
 		this.debug(`LEGACY RESPONSE ${method} ${url} status=${response.status}`)
@@ -222,9 +228,15 @@ export class UnifiInstance extends InstanceBase {
 				`API FETCH FAILED ${method} ${url} ` +
 				`sslverify=${this.config.sslverify !== false} ` +
 				`headers=${JSON.stringify(safeHeaders)} ` +
-				`error=${err?.message}`
+				`error=${err?.message} ` +
+				`name=${err?.name ?? ''} ` +
+				`type=${/** @type {any} */ (err)?.type ?? ''} ` +
+				`code=${/** @type {any} */ (err)?.code ?? /** @type {any} */ (err)?.cause?.code ?? ''}`
 			this.log('error', msg)
-			this.debug(String(err && err.stack ? err.stack : err))
+			// Always include stack at error level for fetch failures
+			if (err && err.stack) {
+				this.log('error', String(err.stack))
+			}
 			throw err
 		}
 		this.debug(`API RESPONSE ${method} ${url} status=${response.status}`)
