@@ -68,5 +68,13 @@ export function getConfigFields() {
 			required: false,
 			tooltip: 'Leave empty to auto-discover from site name',
 		},
+		{
+			type: 'checkbox',
+			label: 'Verbose Logging',
+			id: 'verbose',
+			default: false,
+			width: 6,
+			tooltip: 'When enabled, logs request/response details for debugging',
+		},
 	]
 }

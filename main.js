@@ -63,6 +63,16 @@ export class UnifiInstance extends InstanceBase {
 	}
 
 	/**
+	 * Conditional debug logger honoring config.verbose
+	 * @param {string} message
+	 */
+	debug(message) {
+		if (this.config?.verbose) {
+			this.log('debug', message)
+		}
+	}
+
+	/**
 	 * @param {any} config
 	 */
 	async init(config) {
@@ -82,6 +92,7 @@ export class UnifiInstance extends InstanceBase {
 				} catch (e) {
 					const err = /** @type {Error} */ (e)
 					this.log('error', `Connection check failed: ${err?.message ?? err}`)
+					this.debug(`Connection check error details: ${String(err && err.stack ? err.stack : err)}`)
 					this.updateStatus(InstanceStatus.ConnectionFailure)
 				}
 			}
@@ -122,7 +133,9 @@ export class UnifiInstance extends InstanceBase {
 			options.body = JSON.stringify(body)
 		}
 
+		this.debug(`LEGACY REQUEST ${method} ${url}${body ? ` body=${JSON.stringify(body)}` : ''}`)
 		const response = await fetch(url, options)
+		this.debug(`LEGACY RESPONSE ${method} ${url} status=${response.status}`)
 
 		if (!response.ok) {
 			const errorText = await response.text()
@@ -132,6 +145,7 @@ export class UnifiInstance extends InstanceBase {
 			} catch {
 				errorData = { message: errorText }
 			}
+			this.debug(`LEGACY ERROR ${method} ${url} status=${response.status} body=${errorText}`)
 			throw new Error(errorData.message || `API Error: ${response.status} ${response.statusText}`)
 		}
 
@@ -141,6 +155,7 @@ export class UnifiInstance extends InstanceBase {
 
 		const result = await response.json()
 		// Legacy API wraps responses in { meta: {...}, data: [...] }
+		this.debug(`LEGACY RESULT ${method} ${url} payload=${JSON.stringify(result).slice(0, 1000)}`)
 		return result.data || result
 	}
 
@@ -175,7 +190,9 @@ export class UnifiInstance extends InstanceBase {
 			options.body = JSON.stringify(body)
 		}
 
+		this.debug(`API REQUEST ${method} ${url}${body ? ` body=${JSON.stringify(body)}` : ''}`)
 		const response = await fetch(url, options)
+		this.debug(`API RESPONSE ${method} ${url} status=${response.status}`)
 
 		if (!response.ok) {
 			const errorText = await response.text()
@@ -185,6 +202,7 @@ export class UnifiInstance extends InstanceBase {
 			} catch {
 				errorData = { message: errorText }
 			}
+			this.debug(`API ERROR ${method} ${url} status=${response.status} body=${errorText}`)
 			throw new Error(errorData.message || `API Error: ${response.status} ${response.statusText}`)
 		}
 
@@ -192,7 +210,9 @@ export class UnifiInstance extends InstanceBase {
 			return null
 		}
 
-		return await response.json()
+		const payload = await response.json()
+		this.debug(`API RESULT ${method} ${url} payload=${JSON.stringify(payload).slice(0, 1000)}`)
+		return payload
 	}
 
 	/**
@@ -341,6 +361,7 @@ export class UnifiInstance extends InstanceBase {
 		} catch (e) {
 			const err = /** @type {Error} */ (e)
 			this.log('error', `Connection failed: ${err?.message ?? err}`)
+			this.debug(`Config update connection error details: ${String(err && err.stack ? err.stack : err)}`)
 			this.updateStatus(InstanceStatus.ConnectionFailure, err?.message)
 		}
 	}
