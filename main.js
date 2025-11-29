@@ -114,13 +114,15 @@ export class UnifiInstance extends InstanceBase {
 		// Legacy API uses site name, not UUID
 		const siteName = this.config.site || 'default'
 		const legacyPath = path.replace('<SITE>', siteName)
-		const url = `https://${this.config.host}:${this.config.port}/api${legacyPath}`
+		// UniFi controller exposes legacy API under /proxy/network/api
+		const url = `https://${this.config.host}:${this.config.port}/proxy/network/api${legacyPath}`
 
 		/** @type {any} */
 		const options = {
 			method,
 			headers: {
-				Authorization: `Bearer ${this.config.apiKey}`,
+				'X-API-KEY': this.config.apiKey,
+				Accept: 'application/json',
 				'Content-Type': 'application/json',
 			},
 		}
@@ -197,13 +199,15 @@ export class UnifiInstance extends InstanceBase {
 			throw new Error('API Key not configured')
 		}
 
-		const url = `https://${this.config.host}:${this.config.port}/integration${path}`
+		// Integration API is under /proxy/network/integration
+		const url = `https://${this.config.host}:${this.config.port}/proxy/network/integration${path}`
 
 		/** @type {any} */
 		const options = {
 			method,
 			headers: {
-				Authorization: `Bearer ${this.config.apiKey}`,
+				'X-API-KEY': this.config.apiKey,
+				Accept: 'application/json',
 				'Content-Type': 'application/json',
 			},
 		}
