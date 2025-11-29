@@ -7,6 +7,7 @@ import https from 'https'
 import { getActionDefinitions } from './actions.js'
 import { getConfigFields } from './config.js'
 import { UpgradeScripts } from './upgrades.js'
+import { getFeedbackDefinitions } from './feedbacks.js'
 
 // Create a global HTTPS agent for SSL bypass
 /** @type {https.Agent | null} */
@@ -42,6 +43,19 @@ export class UnifiInstance extends InstanceBase {
 	 * @type {Map<string, string>}
 	 */
 	deviceMacToUuid = new Map()
+
+	/**
+	 * Cache of legacy device id (_id) keyed by MAC
+	 * @type {Map<string, string>}
+	 */
+	legacyMacToId = new Map()
+
+	/**
+	 * Cache of per-port state keyed by `${mac}:${port}`
+	 * Value shape: { linkUp: boolean, poePower: boolean, poeMode?: string }
+	 * @type {Map<string, { linkUp: boolean, poePower: boolean, poeMode?: string } >}
+	 */
+	portStateCache = new Map()
 
 	connectionCheckInterval = 30000
 	/**
@@ -81,6 +95,7 @@ export class UnifiInstance extends InstanceBase {
 		this.updateStatus(InstanceStatus.Connecting)
 
 		this.setActionDefinitions(getActionDefinitions(this))
+		this.setFeedbackDefinitions(getFeedbackDefinitions(this))
 
 		await this.configUpdated(config)
 
@@ -88,6 +103,8 @@ export class UnifiInstance extends InstanceBase {
 			if (this.config.apiKey) {
 				try {
 					await this.apiRequest('GET', '/v1/info')
+					// Also refresh port states periodically
+					await this.refreshPortStates()
 					this.updateStatus(InstanceStatus.Ok)
 				} catch (e) {
 					const err = /** @type {Error} */ (e)
@@ -97,6 +114,36 @@ export class UnifiInstance extends InstanceBase {
 				}
 			}
 		}, this.connectionCheckInterval)
+	}
+
+	/**
+	 * Refresh cached port states from legacy API `/stat/device`
+	 */
+	async refreshPortStates() {
+		try {
+			const devices = await this.legacyApiRequest('GET', `/s/<SITE>/stat/device`)
+			if (!devices || !Array.isArray(devices)) return
+			for (const d of devices) {
+				const mac = String(d?.mac || '').toLowerCase()
+				const ports = Array.isArray(d?.port_table) ? d.port_table : []
+				for (const p of ports) {
+					const idx = Number(p?.port_idx ?? p?.portidx ?? p?.port)
+					if (!mac || !idx) continue
+					const key = `${mac}:${idx}`
+					const linkUp = Boolean(p?.up)
+					const poePowerVal = p?.poe_power
+					const poePower = typeof poePowerVal === 'number' ? poePowerVal > 0 : Boolean(p?.poe_enable || p?.poe)
+					const poeMode = p?.poe_mode
+					this.portStateCache.set(key, { linkUp, poePower, poeMode })
+				}
+			}
+			// Notify Companion that feedbacks may need to update
+			this.checkFeedbacks('PortLinkStatus')
+			this.checkFeedbacks('PortPowerStatus')
+		} catch (e) {
+			const err = /** @type {Error} */ (e)
+			this.log('warn', `Failed to refresh port states: ${err?.message ?? err}`)
+		}
 	}
 
 	/**
@@ -416,6 +463,7 @@ export class UnifiInstance extends InstanceBase {
 		}
 
 		this.setActionDefinitions(getActionDefinitions(this))
+		this.setFeedbackDefinitions(getFeedbackDefinitions(this))
 	}
 
 	/**
@@ -436,11 +484,13 @@ export class UnifiInstance extends InstanceBase {
 		this.deviceMacToUuid.clear()
 		this.portProfileOptions = []
 		this.switchMacAddressOptions = []
+		this.portStateCache.clear()
 
 		// Test connection and load initial data
 		try {
 			await this.apiRequest('GET', '/v1/info')
 			await this.#refreshActionInfo()
+			await this.refreshPortStates()
 			this.updateStatus(InstanceStatus.Ok)
 		} catch (e) {
 			const err = /** @type {Error} */ (e)
@@ -495,21 +545,32 @@ export class UnifiInstance extends InstanceBase {
 			// First, get the device details from Integration API to get device _id
 			const device = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices/${deviceUuid}`)
 
-			// Get full device list from legacy API (stat endpoint) and match by MAC to obtain _id
-			const legacyDevices = await this.legacyApiRequest('GET', `/s/<SITE>/stat/device`)
-
-			if (!legacyDevices || !Array.isArray(legacyDevices) || legacyDevices.length === 0) {
-				throw new Error('Legacy device list not found')
-			}
-
+			// Resolve legacy _id by MAC with caching
 			const targetMac = String(device.macAddress || device.mac || switch_mac).toLowerCase()
-			const fullDevice = legacyDevices.find((/** @type {any} */ d) => String(d.mac).toLowerCase() === targetMac)
+			let deviceId = this.legacyMacToId.get(targetMac) || ''
+			if (!deviceId) {
+				// Fetch device list and populate cache
+				const legacyDevices = await this.legacyApiRequest('GET', `/s/<SITE>/stat/device`)
 
-			if (!fullDevice) {
-				throw new Error(`Device with MAC ${targetMac} not found in legacy API`)
+				if (!legacyDevices || !Array.isArray(legacyDevices) || legacyDevices.length === 0) {
+					throw new Error('Legacy device list not found')
+				}
+
+				for (const d of legacyDevices) {
+					if (d && d.mac && d._id) {
+						this.legacyMacToId.set(String(d.mac).toLowerCase(), String(d._id))
+					}
+				}
+
+				deviceId = this.legacyMacToId.get(targetMac) || ''
+				if (!deviceId) {
+					throw new Error(`Device with MAC ${targetMac} not found in legacy API`)
+				}
 			}
-			const deviceId = fullDevice._id
-			const portOverrides = fullDevice.port_overrides || []
+			// Fetch current device config to preserve existing port_overrides
+			const fullDeviceConfig = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${deviceId}`)
+			const currentDevice = Array.isArray(fullDeviceConfig) ? fullDeviceConfig[0] : fullDeviceConfig
+			const portOverrides = currentDevice && currentDevice.port_overrides ? currentDevice.port_overrides : []
 
 			// Find or create port override
 			const selectedPort = portOverrides.find((/** @type {any} */ port) => port.port_idx == port_idx)
