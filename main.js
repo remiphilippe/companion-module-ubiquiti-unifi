@@ -495,14 +495,19 @@ export class UnifiInstance extends InstanceBase {
 			// First, get the device details from Integration API to get device _id
 			const device = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices/${deviceUuid}`)
 
-			// Get full device config from legacy API
-			const deviceDetails = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${device.macAddress}`)
+			// Get full device list from legacy API and match by MAC to obtain _id
+			const legacyDevices = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device`)
 
-			if (!deviceDetails || deviceDetails.length === 0) {
-				throw new Error('Device not found')
+			if (!legacyDevices || !Array.isArray(legacyDevices) || legacyDevices.length === 0) {
+				throw new Error('Legacy device list not found')
 			}
 
-			const fullDevice = deviceDetails[0]
+			const targetMac = String(device.macAddress || device.mac || switch_mac).toLowerCase()
+			const fullDevice = legacyDevices.find((/** @type {any} */ d) => String(d.mac).toLowerCase() === targetMac)
+
+			if (!fullDevice) {
+				throw new Error(`Device with MAC ${targetMac} not found in legacy API`)
+			}
 			const deviceId = fullDevice._id
 			const portOverrides = fullDevice.port_overrides || []
 
