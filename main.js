@@ -153,7 +153,7 @@ export class UnifiInstance extends InstanceBase {
 	 * @param {any} [body]
 	 * @returns {Promise<any>}
 	 */
-	async legacyApiRequest(method, path, body = null) {
+	async legacyApiRequest(method, path, body = null, opts = /** @type {{ suppressNotFound?: boolean }} */ ({})) {
 		if (!this.config.apiKey) {
 			throw new Error('API Key not configured')
 		}
@@ -213,6 +213,11 @@ export class UnifiInstance extends InstanceBase {
 		this.debug(`LEGACY RESPONSE ${method} ${url} status=${response.status}`)
 
 		if (!response.ok) {
+			// Some controllers return 404 for unsupported GET on /rest/device/{id}.
+			// Allow callers to suppress logging and treat as empty result.
+			if (response.status === 404 && opts.suppressNotFound) {
+				return Array.isArray(body) ? [] : null
+			}
 			const errorText = await response.text()
 			let errorData
 			try {
@@ -597,7 +602,9 @@ export class UnifiInstance extends InstanceBase {
 			// Some controller versions do not support GET on /rest/device/{id}; default to empty array on 404.
 			let portOverrides = []
 			try {
-				const fullDeviceConfig = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${deviceId}`)
+				const fullDeviceConfig = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${deviceId}`, null, {
+					suppressNotFound: true,
+				})
 				const currentDevice = Array.isArray(fullDeviceConfig) ? fullDeviceConfig[0] : fullDeviceConfig
 				portOverrides = currentDevice && currentDevice.port_overrides ? currentDevice.port_overrides : []
 			} catch (e) {
