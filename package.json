@@ -9,8 +9,7 @@
 	},
 	"license": "MIT",
 	"dependencies": {
-		"@companion-module/base": "~1.6.0",
-		"node-unifi": "^2.5.1",
+		"@companion-module/base": "~1.13.5",
 		"p-queue": "^7.3.4"
 	},
 	"repository": {

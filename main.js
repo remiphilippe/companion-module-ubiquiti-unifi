@@ -1,7 +1,6 @@
 // @ts-check
 
 import { InstanceBase, InstanceStatus, runEntrypoint } from '@companion-module/base'
-import unifi from 'node-unifi'
 import pQueue from 'p-queue'
 import { getActionDefinitions } from './actions.js'
 import { getConfigFields } from './config.js'
@@ -12,13 +11,21 @@ export class UnifiInstance extends InstanceBase {
 		concurrency: 1,
 	})
 
-	loggedIn = false
-
-	connectionCheckInterval = 10000 // Note: this must be more than the timeout used in node-unifi
 	/**
-	 * @type {NodeJS.Timer}
+	 * @type {string | null}
 	 */
-	connectionCheckTimer
+	siteUuid = null
+
+	/**
+	 * @type {Map<string, string>}
+	 */
+	deviceMacToUuid = new Map()
+
+	connectionCheckInterval = 30000
+	/**
+	 * @type {NodeJS.Timer | null}
+	 */
+	connectionCheckTimer = null
 
 	/**
 	 * @type {import('@companion-module/base').DropdownChoice[]}
@@ -36,80 +43,249 @@ export class UnifiInstance extends InstanceBase {
 	async init(config) {
 		this.config = config
 
-		this.updateStatus(InstanceStatus.Ok)
+		this.updateStatus(InstanceStatus.Connecting)
 
 		this.setActionDefinitions(getActionDefinitions(this))
 
 		await this.configUpdated(config)
 
-		this.connectionCheckTimer = setInterval(() => {
-			if (this.controller) {
-				if (this.loggedIn) {
-					// Arbitrary call to check authentication
-					this.controller._ensureLoggedIn().catch((e) => {
-						this.loggedIn = false
-
-						this.log('error', `Status check failed: ${e?.message ?? e}`)
-
-						// TODO - pass error message
-						this.updateStatus(InstanceStatus.Disconnected)
-					})
+		this.connectionCheckTimer = setInterval(async () => {
+			if (this.config.apiKey) {
+				try {
+					await this.apiRequest('GET', '/v1/info')
+					if (this.getStatus() !== InstanceStatus.Ok) {
+						this.updateStatus(InstanceStatus.Ok)
+					}
+				} catch (e) {
+					this.log('error', `Connection check failed: ${e?.message ?? e}`)
+					this.updateStatus(InstanceStatus.ConnectionFailure)
 				}
 			}
 		}, this.connectionCheckInterval)
 	}
 
-	#loginRunning = false
-	#doLogin() {
-		if (this.#loginRunning || !this.controller) return
+	/**
+	 * Make a legacy API request (for port configuration)
+	 * @param {string} method
+	 * @param {string} path
+	 * @param {any} [body]
+	 * @returns {Promise<any>}
+	 */
+	async legacyApiRequest(method, path, body = null) {
+		if (!this.config.apiKey) {
+			throw new Error('API Key not configured')
+		}
 
-		this.#loginRunning = true
-		this.updateStatus(InstanceStatus.Connecting)
+		const siteUuid = await this.getSiteUuid()
+		// Legacy API uses site name, not UUID
+		const siteName = this.config.site || 'default'
+		const legacyPath = path.replace('<SITE>', siteName)
+		const url = `https://${this.config.host}:${this.config.port}/api${legacyPath}`
 
-		// TODO - make sure the result is for the same credentials as when it was fired
-		this.controller
-			.login()
-			.then(() => {
-				this.loggedIn = true
+		const options = {
+			method,
+			headers: {
+				'Authorization': `Bearer ${this.config.apiKey}`,
+				'Content-Type': 'application/json',
+			},
+		}
 
-				this.updateStatus(InstanceStatus.Ok)
-
-				this.#refreshActionInfo().catch(() => null)
+		if (!this.config.sslverify) {
+			// @ts-ignore - Node 18+ supports this
+			options.agent = new (await import('https')).Agent({
+				rejectUnauthorized: false,
 			})
-			.catch((e) => {
-				this.loggedIn = false
+		}
 
-				// TODO - pass error message
-				this.updateStatus(InstanceStatus.ConnectionFailure)
+		if (body) {
+			options.body = JSON.stringify(body)
+		}
+
+		const response = await fetch(url, options)
+
+		if (!response.ok) {
+			const errorText = await response.text()
+			let errorData
+			try {
+				errorData = JSON.parse(errorText)
+			} catch {
+				errorData = { message: errorText }
+			}
+			throw new Error(errorData.message || `API Error: ${response.status} ${response.statusText}`)
+		}
+
+		if (response.status === 204 || response.headers.get('content-length') === '0') {
+			return null
+		}
+
+		const result = await response.json()
+		// Legacy API wraps responses in { meta: {...}, data: [...] }
+		return result.data || result
+	}
+
+	/**
+	 * Make an API request to the UniFi controller
+	 * @param {string} method
+	 * @param {string} path
+	 * @param {any} [body]
+	 * @returns {Promise<any>}
+	 */
+	async apiRequest(method, path, body = null) {
+		if (!this.config.apiKey) {
+			throw new Error('API Key not configured')
+		}
+
+		const url = `https://${this.config.host}:${this.config.port}/integration${path}`
+
+		const options = {
+			method,
+			headers: {
+				'Authorization': `Bearer ${this.config.apiKey}`,
+				'Content-Type': 'application/json',
+			},
+		}
+
+		if (!this.config.sslverify) {
+			// @ts-ignore - Node 18+ supports this
+			options.agent = new (await import('https')).Agent({
+				rejectUnauthorized: false,
 			})
-			.finally(() => {
-				this.#loginRunning = false
-			})
+		}
+
+		if (body) {
+			options.body = JSON.stringify(body)
+		}
+
+		const response = await fetch(url, options)
+
+		if (!response.ok) {
+			const errorText = await response.text()
+			let errorData
+			try {
+				errorData = JSON.parse(errorText)
+			} catch {
+				errorData = { message: errorText }
+			}
+			throw new Error(errorData.message || `API Error: ${response.status} ${response.statusText}`)
+		}
+
+		if (response.status === 204 || response.headers.get('content-length') === '0') {
+			return null
+		}
+
+		return await response.json()
+	}
+
+	/**
+	 * Get or discover the site UUID
+	 * @returns {Promise<string>}
+	 */
+	async getSiteUuid() {
+		if (this.siteUuid) {
+			return this.siteUuid
+		}
+
+		if (this.config.siteUuid) {
+			this.siteUuid = this.config.siteUuid
+			return this.siteUuid
+		}
+
+		// Discover site UUID from site name
+		try {
+			const siteName = this.config.site || 'default'
+			const filter = `internalReference.eq('${siteName}')`
+			const response = await this.apiRequest('GET', `/v1/sites?filter=${encodeURIComponent(filter)}`)
+
+			if (response.data && response.data.length > 0) {
+				this.siteUuid = response.data[0].id
+				this.log('info', `Discovered site UUID: ${this.siteUuid} for site: ${siteName}`)
+				return this.siteUuid
+			}
+
+			throw new Error(`Site '${siteName}' not found`)
+		} catch (e) {
+			this.log('error', `Failed to discover site UUID: ${e?.message ?? e}`)
+			throw e
+		}
+	}
+
+	/**
+	 * Get device UUID from MAC address
+	 * @param {string} macAddress
+	 * @returns {Promise<string>}
+	 */
+	async getDeviceUuid(macAddress) {
+		if (this.deviceMacToUuid.has(macAddress)) {
+			return this.deviceMacToUuid.get(macAddress)
+		}
+
+		// Refresh device list
+		await this.refreshDeviceList()
+
+		if (this.deviceMacToUuid.has(macAddress)) {
+			return this.deviceMacToUuid.get(macAddress)
+		}
+
+		throw new Error(`Device with MAC address ${macAddress} not found`)
+	}
+
+	/**
+	 * Refresh the device list from the API
+	 */
+	async refreshDeviceList() {
+		try {
+			const siteUuid = await this.getSiteUuid()
+			const response = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices?limit=200`)
+
+			if (response.data) {
+				this.deviceMacToUuid.clear()
+				for (const device of response.data) {
+					if (device.macAddress) {
+						this.deviceMacToUuid.set(device.macAddress, device.id)
+					}
+				}
+			}
+		} catch (e) {
+			this.log('warn', `Failed to refresh device list: ${e?.message ?? e}`)
+		}
 	}
 
 	async #refreshActionInfo() {
-		if (!this.controller) return
-
 		try {
-			const portProfileConfigs = await this.controller.getPortConfig()
+			const siteUuid = await this.getSiteUuid()
+			const response = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices?limit=200`)
 
-			this.portProfileOptions = portProfileConfigs.map((profile) => ({
-				id: profile.name,
-				label: profile.name,
-			}))
+			if (response.data) {
+				this.switchMacAddressOptions = response.data
+					.filter((device) => device.features && device.features.includes('switching'))
+					.map((device) => ({
+						id: device.macAddress,
+						label: `${device.name} (${device.macAddress})`,
+					}))
+
+				// Cache MAC to UUID mapping
+				for (const device of response.data) {
+					if (device.macAddress) {
+						this.deviceMacToUuid.set(device.macAddress, device.id)
+					}
+				}
+			}
 		} catch (e) {
-			this.log('warn', `Failed to load port profile list: ${e?.message ?? e}`)
+			this.log('warn', `Failed to load device list: ${e?.message ?? e}`)
 		}
 
+		// Load port profiles from legacy API
 		try {
-			const devicesBasic = await this.controller.getAccessDevicesBasic()
-
-			this.switchMacAddressOptions = devicesBasic.map((device) => ({
-				id: device.mac,
-				label: `${device.name} (${device.mac})`,
-			}))
+			const portProfiles = await this.legacyApiRequest('GET', '/s/<SITE>/rest/portconf')
+			if (portProfiles && Array.isArray(portProfiles)) {
+				this.portProfileOptions = portProfiles.map((profile) => ({
+					id: profile.name,
+					label: profile.name,
+				}))
+			}
 		} catch (e) {
-			this.log('warn', `Failed to load port profile list: ${e?.message ?? e}`)
+			this.log('warn', `Failed to load port profiles: ${e?.message ?? e}`)
+			this.portProfileOptions = []
 		}
 
 		this.setActionDefinitions(getActionDefinitions(this))
@@ -118,40 +294,38 @@ export class UnifiInstance extends InstanceBase {
 	async configUpdated(config) {
 		this.config = config
 
-		this.updateStatus(InstanceStatus.Connecting)
-
-		this.loggedIn = false
-		if (this.controller !== undefined) {
-			this.controller.removeAllListeners()
-
-			this.controller.logout().catch(() => null)
-
-			delete this.controller
+		if (!this.config.apiKey) {
+			this.updateStatus(InstanceStatus.BadConfig, 'API Key not configured')
+			return
 		}
 
+		this.updateStatus(InstanceStatus.Connecting)
+
+		// Clear cached data
+		this.siteUuid = null
+		this.deviceMacToUuid.clear()
 		this.portProfileOptions = []
 		this.switchMacAddressOptions = []
 
-		this.controller = new unifi.Controller({
-			host: this.config.host,
-			port: this.config.port,
-			username: this.config.username,
-			password: this.config.password,
-			token2FA: this.config.token2FA,
-			sslverify: !!this.config.sslverify,
-			site: this.config.site,
-		})
-
-		this.#doLogin()
+		// Test connection and load initial data
+		try {
+			await this.apiRequest('GET', '/v1/info')
+			await this.#refreshActionInfo()
+			this.updateStatus(InstanceStatus.Ok)
+		} catch (e) {
+			this.log('error', `Connection failed: ${e?.message ?? e}`)
+			this.updateStatus(InstanceStatus.ConnectionFailure, e?.message)
+		}
 	}
 
 	async destroy() {
-		clearInterval(this.connectionCheckTimer)
-
-		if (this.controller) {
-			this.controller.removeAllListeners()
-			await this.controller.logout().catch(() => null)
+		if (this.connectionCheckTimer) {
+			clearInterval(this.connectionCheckTimer)
+			this.connectionCheckTimer = null
 		}
+
+		this.siteUuid = null
+		this.deviceMacToUuid.clear()
 	}
 
 	/**
@@ -159,13 +333,20 @@ export class UnifiInstance extends InstanceBase {
 	 * @param {number} port_idx
 	 */
 	async doPowerCyclePort(switch_mac, port_idx) {
-		if (!this.controller) throw new Error('Not initialised')
-		if (!this.loggedIn) throw new Error('Not logged in')
-
 		try {
-			await this.controller.powerCycleSwitchPort(switch_mac, port_idx)
+			const siteUuid = await this.getSiteUuid()
+			const deviceUuid = await this.getDeviceUuid(switch_mac)
+
+			await this.apiRequest(
+				'POST',
+				`/v1/sites/${siteUuid}/devices/${deviceUuid}/interfaces/ports/${port_idx}/actions`,
+				{ action: 'POWER_CYCLE' }
+			)
+
+			this.log('info', `Power cycled port ${port_idx} on device ${switch_mac}`)
 		} catch (e) {
 			this.handleErrors(e, `Power cycle port ${switch_mac}@${port_idx}`)
+			throw e
 		}
 	}
 
@@ -175,18 +356,25 @@ export class UnifiInstance extends InstanceBase {
 	 * @param {string} poe_mode
 	 */
 	async changePortPOEMode(switch_mac, port_idx, poe_mode) {
-		if (!this.controller) throw new Error('Not initialised')
-		if (!this.loggedIn) throw new Error('Not logged in')
-
 		try {
-			const device = (await this.controller.getAccessDevices(switch_mac))[0]
-			if (!device) throw new Error('No device found')
-			if (!device.port_overrides || !device._id) throw new Error('Device invalid')
+			const siteUuid = await this.getSiteUuid()
+			const deviceUuid = await this.getDeviceUuid(switch_mac)
 
-			const deviceId = device._id
-			const portOverrides = device.port_overrides
+			// First, get the device details from Integration API to get device _id
+			const device = await this.apiRequest('GET', `/v1/sites/${siteUuid}/devices/${deviceUuid}`)
 
-			// TODO - can this be more granular?
+			// Get full device config from legacy API
+			const deviceDetails = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${device.macAddress}`)
+			
+			if (!deviceDetails || deviceDetails.length === 0) {
+				throw new Error('Device not found')
+			}
+
+			const fullDevice = deviceDetails[0]
+			const deviceId = fullDevice._id
+			const portOverrides = fullDevice.port_overrides || []
+
+			// Find or create port override
 			const selectedPort = portOverrides.find((port) => port.port_idx == port_idx)
 			if (selectedPort) {
 				selectedPort.poe_mode = poe_mode
@@ -197,9 +385,15 @@ export class UnifiInstance extends InstanceBase {
 				})
 			}
 
-			await this.controller.setDeviceSettingsBase(deviceId, { port_overrides: portOverrides })
+			// Update device via legacy API
+			await this.legacyApiRequest('PUT', `/s/<SITE>/rest/device/${deviceId}`, {
+				port_overrides: portOverrides,
+			})
+
+			this.log('info', `Changed POE mode on port ${port_idx} of device ${switch_mac} to ${poe_mode}`)
 		} catch (e) {
 			this.handleErrors(e, `Change port POE mode ${switch_mac}@${port_idx}`)
+			throw e
 		}
 	}
 
@@ -208,52 +402,35 @@ export class UnifiInstance extends InstanceBase {
 	 * @param {string} poe_mode
 	 */
 	async changePortProfilePOEMode(profile_name, poe_mode) {
-		if (!this.controller) throw new Error('Not initialised')
-		if (!this.loggedIn) throw new Error('Not logged in')
-
 		try {
-			const portProfileConfigs = await this.controller.getPortConfig()
+			// Get port profiles from legacy API
+			const portProfiles = await this.legacyApiRequest('GET', '/s/<SITE>/rest/portconf')
 
-			const profileConfig = portProfileConfigs.find((profile) => profile.name == profile_name)
-			if (!profileConfig) throw new Error('Port profile not found')
+			const profileConfig = portProfiles.find((profile) => profile.name == profile_name)
+			if (!profileConfig) {
+				throw new Error('Port profile not found')
+			}
 
-			profileConfig.poe_mode = poe_mode
+			// Update profile via legacy API
+			await this.legacyApiRequest('PUT', `/s/<SITE>/rest/portconf/${profileConfig._id}`, {
+				...profileConfig,
+				poe_mode: poe_mode,
+			})
 
-			await this.controller.customApiRequest(
-				'/api/s/<SITE>/rest/portconf/' + profileConfig._id,
-				// @ts-ignore
-				'PUT',
-				profileConfig
-			)
+			this.log('info', `Changed POE mode on profile ${profile_name} to ${poe_mode}`)
 		} catch (e) {
 			this.handleErrors(e, `Change port profile POE mode ${profile_name}`)
+			throw e
 		}
 	}
 
 	/**
-	 * @param {Error} err
+	 * @param {any} err
 	 * @param {string} context
 	 */
 	handleErrors(err, context) {
-		// if (err == 'api.err.Invalid') {
-		// 	this.log('error', 'Username or Password invalid')
-		// } else if (err == 'api.err.LoginRequired') {
-		// 	this.log('error', 'Failed to login')
-		// } else if (err == 'api.err.UnknownDevice') {
-		// 	this.log('warn', 'Device "' + attributes['mac'] + '" does not exist')
-		// } else if (err == 'api.err.InvalidPayload' || err == 'api.err.InvalidTargetPort') {
-		// 	this.log('warn', 'Port "' + attributes['switchPort'] + '" does not exist or POE is not currently active on it')
-		// } else if (err == 'api.err.UnknownProfile') {
-		// 	this.log('warn', 'Port Profile ' + attributes['profile'] + ' not found')
-		// } else if (err == 'Host_Timeout') {
-		// 	this.log('error', 'ERROR: Host Timedout')
-		// 	this.updateStatus(InstanceStatus.ConnectionFailure)
-		// } else if (err.includes('EHOSTDOWN')) {
-		// 	this.log('error', 'ERROR: Host not found')
-		// 	this.updateStatus(InstanceStatus.ConnectionFailure)
-		// } else {
-		this.log('error', `ERROR for ${context}: ${err?.message ?? err}`)
-		// }
+		const message = err?.message ?? String(err)
+		this.log('error', `${context}: ${message}`)
 	}
 }
 
