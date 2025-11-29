@@ -98,5 +98,57 @@ export function getActionDefinitions(self) {
 				})
 			},
 		},
+		ToggleAutoPOE: {
+			name: 'Switchport: Toggle POE Auto',
+			options: [
+				{
+					type: 'dropdown',
+					label: 'Switch Mac Address',
+					id: 'mac',
+					default: '',
+					allowCustom: true,
+					choices: self.switchMacAddressOptions,
+				},
+				{
+					type: 'number',
+					label: 'Port',
+					id: 'port',
+					default: 1,
+					min: 1,
+					max: 100,
+				},
+			],
+			callback: async (action) => {
+				await self.queue.add(async () => {
+					await self.togglePortPOEAuto(action.options.mac + '', Number(action.options.port))
+				})
+			},
+		},
+		TogglePassivePOE: {
+			name: 'Switchport: Toggle 24V Passive',
+			options: [
+				{
+					type: 'dropdown',
+					label: 'Switch Mac Address',
+					id: 'mac',
+					default: '',
+					allowCustom: true,
+					choices: self.switchMacAddressOptions,
+				},
+				{
+					type: 'number',
+					label: 'Port',
+					id: 'port',
+					default: 1,
+					min: 1,
+					max: 100,
+				},
+			],
+			callback: async (action) => {
+				await self.queue.add(async () => {
+					await self.togglePortPOEPassive(action.options.mac + '', Number(action.options.port))
+				})
+			},
+		},
 	}
 }

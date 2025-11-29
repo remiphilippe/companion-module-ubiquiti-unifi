@@ -533,6 +533,32 @@ export class UnifiInstance extends InstanceBase {
 	}
 
 	/**
+	 * Toggle POE mode between 'auto' and 'off' for a port
+	 * @param {string} switch_mac
+	 * @param {number} port_idx
+	 */
+	async togglePortPOEAuto(switch_mac, port_idx) {
+		const key = `${String(switch_mac).toLowerCase()}:${Number(port_idx)}`
+		const current = this.portStateCache.get(key)
+		const currentMode = current?.poeMode || ''
+		const nextMode = currentMode === 'auto' ? 'off' : 'auto'
+		await this.changePortPOEMode(switch_mac, port_idx, nextMode)
+	}
+
+	/**
+	 * Toggle POE mode between 'pasv24' and 'off' for a port
+	 * @param {string} switch_mac
+	 * @param {number} port_idx
+	 */
+	async togglePortPOEPassive(switch_mac, port_idx) {
+		const key = `${String(switch_mac).toLowerCase()}:${Number(port_idx)}`
+		const current = this.portStateCache.get(key)
+		const currentMode = current?.poeMode || ''
+		const nextMode = currentMode === 'pasv24' ? 'off' : 'pasv24'
+		await this.changePortPOEMode(switch_mac, port_idx, nextMode)
+	}
+
+	/**
 	 * @param {string} switch_mac
 	 * @param {number} port_idx
 	 * @param {string} poe_mode
@@ -567,10 +593,22 @@ export class UnifiInstance extends InstanceBase {
 					throw new Error(`Device with MAC ${targetMac} not found in legacy API`)
 				}
 			}
-			// Fetch current device config to preserve existing port_overrides
-			const fullDeviceConfig = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${deviceId}`)
-			const currentDevice = Array.isArray(fullDeviceConfig) ? fullDeviceConfig[0] : fullDeviceConfig
-			const portOverrides = currentDevice && currentDevice.port_overrides ? currentDevice.port_overrides : []
+			// Try to fetch current device config to preserve existing port_overrides.
+			// Some controller versions do not support GET on /rest/device/{id}; default to empty array on 404.
+			let portOverrides = []
+			try {
+				const fullDeviceConfig = await this.legacyApiRequest('GET', `/s/<SITE>/rest/device/${deviceId}`)
+				const currentDevice = Array.isArray(fullDeviceConfig) ? fullDeviceConfig[0] : fullDeviceConfig
+				portOverrides = currentDevice && currentDevice.port_overrides ? currentDevice.port_overrides : []
+			} catch (e) {
+				this.debug(
+					'Legacy GET for device config failed for id=' +
+						deviceId +
+						'; proceeding with empty port_overrides. Error=' +
+						/** @type {any} */ (e)?.message
+				)
+				portOverrides = []
+			}
 
 			// Find or create port override
 			const selectedPort = portOverrides.find((/** @type {any} */ port) => port.port_idx == port_idx)
