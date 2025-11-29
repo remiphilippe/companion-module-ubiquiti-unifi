@@ -173,6 +173,21 @@ export class UnifiInstance extends InstanceBase {
 			} catch {
 				errorData = { message: errorText }
 			}
+			const legacyBodySnippet = String(errorText).slice(0, 500)
+			this.log(
+				'error',
+				'LEGACY API ERROR ' +
+					method +
+					' ' +
+					url +
+					' ' +
+					' status=' +
+					response.status +
+					' ' +
+					response.statusText +
+					' body=' +
+					legacyBodySnippet
+			)
 			this.debug(`LEGACY ERROR ${method} ${url} status=${response.status} body=${errorText}`)
 			throw new Error(errorData.message || `API Error: ${response.status} ${response.statusText}`)
 		}
@@ -256,6 +271,21 @@ export class UnifiInstance extends InstanceBase {
 			} catch {
 				errorData = { message: errorText }
 			}
+			const bodySnippet = String(errorText).slice(0, 500)
+			this.log(
+				'error',
+				'API ERROR ' +
+					method +
+					' ' +
+					url +
+					' ' +
+					' status=' +
+					response.status +
+					' ' +
+					response.statusText +
+					' body=' +
+					bodySnippet
+			)
 			this.debug(`API ERROR ${method} ${url} status=${response.status} body=${errorText}`)
 			throw new Error(errorData.message || `API Error: ${response.status} ${response.statusText}`)
 		}
