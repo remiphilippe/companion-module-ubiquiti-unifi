@@ -126,6 +126,8 @@ export class UnifiInstance extends InstanceBase {
 		}
 
 		if (!this.config.sslverify) {
+			// Ensure TLS verification is disabled for Node fetch
+			process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 			options.agent = getInsecureAgent()
 		}
 
@@ -207,6 +209,7 @@ export class UnifiInstance extends InstanceBase {
 		}
 
 		if (!this.config.sslverify) {
+			process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 			options.agent = getInsecureAgent()
 		}
 
