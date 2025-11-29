@@ -134,7 +134,25 @@ export class UnifiInstance extends InstanceBase {
 		}
 
 		this.debug(`LEGACY REQUEST ${method} ${url}${body ? ` body=${JSON.stringify(body)}` : ''}`)
-		const response = await fetch(url, options)
+		let response
+		try {
+			response = await fetch(url, options)
+		} catch (e) {
+			const err = /** @type {Error} */ (e)
+			const safeHeaders = { ...options.headers }
+			if (safeHeaders && typeof safeHeaders === 'object') {
+				// Do not leak the API key in logs
+				delete safeHeaders.Authorization
+			}
+			const msg =
+				`LEGACY FETCH FAILED ${method} ${url} ` +
+				`sslverify=${this.config.sslverify !== false} ` +
+				`headers=${JSON.stringify(safeHeaders)} ` +
+				`error=${err?.message}`
+			this.log('error', msg)
+			this.debug(String(err && err.stack ? err.stack : err))
+			throw err
+		}
 		this.debug(`LEGACY RESPONSE ${method} ${url} status=${response.status}`)
 
 		if (!response.ok) {
@@ -191,7 +209,24 @@ export class UnifiInstance extends InstanceBase {
 		}
 
 		this.debug(`API REQUEST ${method} ${url}${body ? ` body=${JSON.stringify(body)}` : ''}`)
-		const response = await fetch(url, options)
+		let response
+		try {
+			response = await fetch(url, options)
+		} catch (e) {
+			const err = /** @type {Error} */ (e)
+			const safeHeaders = { ...options.headers }
+			if (safeHeaders && typeof safeHeaders === 'object') {
+				delete safeHeaders.Authorization
+			}
+			const msg =
+				`API FETCH FAILED ${method} ${url} ` +
+				`sslverify=${this.config.sslverify !== false} ` +
+				`headers=${JSON.stringify(safeHeaders)} ` +
+				`error=${err?.message}`
+			this.log('error', msg)
+			this.debug(String(err && err.stack ? err.stack : err))
+			throw err
+		}
 		this.debug(`API RESPONSE ${method} ${url} status=${response.status}`)
 
 		if (!response.ok) {
